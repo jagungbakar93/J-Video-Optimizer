@@ -31,7 +31,7 @@ function App(){
    ];
    const failures=[];
    for(const attempt of attempts){
-    const engine=new FFmpeg();
+    const engine = new FFmpeg();
     engine.on('progress',({progress:p})=>{if(busy.current&&Number.isFinite(p))setProgress(Math.max(0,Math.min(99,Math.round(p*100))))});
     engine.on('log',({message:m})=>{logs.current.push(m);if(logs.current.length>35)logs.current.shift()});
     try{
