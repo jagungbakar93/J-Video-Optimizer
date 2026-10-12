@@ -1,6 +1,6 @@
 import { mkdir, copyFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-const src=resolve('node_modules/@ffmpeg/core/dist/esm');;
+const src = resolve('node_modules/@ffmpeg/core/dist/umd');
 const dest=resolve('public/ffmpeg');
 await mkdir(dest,{recursive:true});
 for (const file of ['ffmpeg-core.js','ffmpeg-core.wasm']) {
