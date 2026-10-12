@@ -12,30 +12,41 @@ function App(){
  useEffect(()=>()=>{if(inputURL.current)URL.revokeObjectURL(inputURL.current);if(outputURL.current)URL.revokeObjectURL(outputURL.current);if(ff.current)ff.current.terminate();},[]);
  const clearOutput=()=>{if(outputURL.current)URL.revokeObjectURL(outputURL.current);outputURL.current=null;setResult('');setResultSize(0);setProgress(0);setMessage('');setStatus('idle');setDetails('')};
  const selectFile=f=>{if(!f)return;if(!f.type.startsWith('video/')&&!/\.(mp4|mov|webm|mkv|m4v)$/i.test(f.name)){setMessage('Sila pilih fail video yang sah.');setStatus('error');return;}if(inputURL.current)URL.revokeObjectURL(inputURL.current);clearOutput();inputURL.current=URL.createObjectURL(f);setSource(inputURL.current);setFile(f);setDuration(0);};
- const load=async()=>{
-  if(ff.current?.loaded)return ff.current;
-  setStatus('loading');setMessage('Memuatkan FFmpeg core daripada hosting website...');
-  const base=`${import.meta.env.BASE_URL}ffmpeg`;
-  const corePath=`${base}/ffmpeg-core.js`, wasmPath=`${base}/ffmpeg-core.wasm`;
-  for(const [path,expected] of [[corePath,'javascript'],[wasmPath,'wasm']]){
-   const response=await fetch(path,{cache:'no-store'});
-   const type=response.headers.get('content-type')||'';
-   if(!response.ok||type.includes('text/html'))throw new Error(`Core asset gagal: ${path} (HTTP ${response.status}, ${type||'unknown type'}). Semak Netlify publish directory dan build log.`);
-   const size=Number(response.headers.get('content-length')||0);
-   if(size>0&&size<1000)throw new Error(`Fail core terlalu kecil: ${path} (${size} bytes).`);
-  }
-  const engine=new FFmpeg();
-  engine.on('progress',({progress:p})=>{if(busy.current&&Number.isFinite(p))setProgress(Math.max(0,Math.min(99,Math.round(p*100))))});
-  engine.on('log',({message:m})=>{logs.current.push(m);if(logs.current.length>35)logs.current.shift();});
-  try{
-   // FFmpeg core UMD perlu dimuatkan sebagai blob URL supaya worker boleh import dengan betul.
-   const coreURL=await toBlobURL(corePath,'text/javascript');
-   const wasmURL=await toBlobURL(wasmPath,'application/wasm');
-   await engine.load({coreURL,wasmURL});
-   ff.current=engine;
-   return engine;
-  }catch(error){engine.terminate();throw new Error(`FFmpeg core load gagal: ${error?.message||error}`)}
- };
+  const load=async()=>{
+   if(ff.current?.loaded)return ff.current;
+   setStatus('loading');setMessage('Memeriksa dan memuatkan FFmpeg Core...');
+   const base=new URL('ffmpeg/',window.location.origin+import.meta.env.BASE_URL).href;
+   const corePath=new URL('ffmpeg-core.js',base).href;
+   const wasmPath=new URL('ffmpeg-core.wasm',base).href;
+   for(const path of [corePath,wasmPath]){
+    const response=await fetch(path,{cache:'no-store'});
+    const type=response.headers.get('content-type')||'';
+    if(!response.ok||type.includes('text/html'))throw new Error(`Core asset tidak sah: ${path}; HTTP ${response.status}; Content-Type ${type}`);
+   }
+   // Direct same-origin URLs first. Some browsers / CSP settings reject blob imports.
+   // Fall back to the FFmpeg.wasm documented Blob URL method.
+   const attempts=[
+    {name:'same-origin',get:async()=>({coreURL:corePath,wasmURL:wasmPath})},
+    {name:'blob',get:async()=>({coreURL:await toBlobURL(corePath,'text/javascript'),wasmURL:await toBlobURL(wasmPath,'application/wasm')})}
+   ];
+   const failures=[];
+   for(const attempt of attempts){
+    const engine=new FFmpeg();
+    engine.on('progress',({progress:p})=>{if(busy.current&&Number.isFinite(p))setProgress(Math.max(0,Math.min(99,Math.round(p*100))))});
+    engine.on('log',({message:m})=>{logs.current.push(m);if(logs.current.length>35)logs.current.shift()});
+    try{
+     setMessage(`Memuatkan FFmpeg (${attempt.name})...`);
+     const urls=await attempt.get();
+     await engine.load(urls);
+     ff.current=engine;
+     return engine;
+    }catch(error){
+     failures.push(`${attempt.name}: ${error?.stack||error?.message||String(error)}`);
+     try{engine.terminate()}catch{}
+    }
+   }
+   throw new Error('FFmpeg Core gagal dimuatkan melalui kedua-dua kaedah.\n'+failures.join('\n\n')+'\nSemak Chrome DevTools > Console dan Network untuk ralat Worker, CSP atau MIME.');
+  };
  const run=async()=>{if(!file||busy.current)return;busy.current=true;const id=++job.current;clearOutput();logs.current=[];setStatus('loading');let engine,srcName='input'+(file.name.match(/\.[^.]+$/)?.[0]||'.mp4'),outName='optimized.mp4';try{engine=await load();setStatus('processing');setMessage('Sedang mengoptimumkan video di dalam browser...');await engine.writeFile(srcName,await fetchFile(file));const [w,h]=ratio==='9:16'?[1080,1920]:ratio==='1:1'?[1080,1080]:[1920,1080];const scale=`scale=w=${w}:h=${h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bicubic,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
  const crf={maximum:'18',balanced:'22',small:'26'}[quality];const args=['-nostdin','-threads','1','-i',srcName,'-map','0:v:0','-map','0:a?','-vf',scale];if(fps!=='source')args.push('-r',fps);args.push('-c:v','libx264','-preset','ultrafast','-crf',crf,'-pix_fmt','yuv420p','-profile:v','high','-movflags','+faststart','-threads','1','-c:a','aac','-b:a','192k','-ar','48000','-max_muxing_queue_size','1024',outName);
  const code=await engine.exec(args);if(code!==0)throw new Error('FFmpeg berhenti dengan kod '+code+'. Semak log diagnostik di bawah.');const data=await engine.readFile(outName);if(id!==job.current)return;const blob=new Blob([data],{type:'video/mp4'});outputURL.current=URL.createObjectURL(blob);setResult(outputURL.current);setResultSize(blob.size);setProgress(100);setStatus('done');setMessage(blob.size>file.size?'Kualiti maksimum dikekalkan, tetapi fail output lebih besar. Cuba mod Balanced untuk saiz lebih kecil.':'Video siap! Semak preview sebelum muat naik ke TikTok.');}catch(e){console.error(e);setStatus('error');setMessage(e?.message||'Encoding gagal. Sila semak log diagnostik.');setDetails([String(e),...logs.current.slice(-18)].join('\n')); }finally{busy.current=false;if(engine){try{await engine.deleteFile(srcName)}catch{}try{await engine.deleteFile(outName)}catch{}}}};
